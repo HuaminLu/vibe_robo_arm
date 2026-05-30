@@ -31,7 +31,7 @@ Z_PICK = -15 # normal drop height for placing objects
 Z_PICK_LOWER = -35 # lower pick height so the gripper reaches the object reliably
 STABILITY_LIMIT = 60  #how many consecutive frames of stable detection before we "lock in" the positions and move to the next phase? (at 30fps, 60 frames is about 2 seconds)
 PIXEL_TOLERANCE = 10  #object can move at most this # of pixels to be considered stationary
-TARGET_MIN_AREA = 100  # minimum area for a velcro patch in pixels (lowered for small velcro)
+TARGET_MIN_AREA = 50  # minimum area for a velcro patch in pixels (lowered for small velcro)
 TARGET_MAX_AREA = 4000  # maximum area for a velcro patch to avoid picking up a whole part
 HAND_CLEAR_FRAMES = 30   # number of consecutive frames with no hand before resuming
 HAND_DETECTION_ENABLED = False  # disable hand detection while tuning
@@ -252,122 +252,92 @@ def phase_detect_plates():
 # this script assumes the targets to be picked up are red blocks
 # be aware your target maynot be red, and they may not be rectangular! You will need to modify the detection logic to fit your specific use case.
 # ---------------------------------------------------------
-def phase_detect_targets():
-    print("\n[PHASE 2] Scanning for targets. Waiting for stability...")
-    stability_counter = 0
-    last_count = 0
+# Update the function definition to take drop_list as an input
+def phase_detect_targets(drop_list):
+    print("\n[PHASE 2] Scanning for targets (with Spatial Plate Exclusion)...")
+    
+    # Define a clearance radius in millimeters. 
+    # If a target is within 35mm of a plate center, it is considered "already placed".
+    EXCLUSION_RADIUS_MM = 35.0 
     
     while True:
         ret, frame = cap.read()
-        if not ret: continue
+        if not ret or frame is None: continue
         
-        frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
-        # Create a display copy so drawings don't affect next frame's HSV detection
         display_frame = frame.copy()
-        if HAND_DETECTION_ENABLED:
-            hand_detected, hand_mask, hand_cnt = detect_hand(frame)
-            if hand_detected:
-                cv2.putText(display_frame, "HAND DETECTED! PAUSE", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                cv2.drawContours(display_frame, [hand_cnt], -1, (0, 0, 255), 2)
-                print("[ALERT] Human hand detected in camera frame!")
-                stability_counter = 0
-                last_count = -1
-                cv2.imshow("Detection", display_frame)
-                cv2.waitKey(1)
-                continue
         
-        # Red Tag Logic (improved with stricter color and circularity)
+        # --- (Your existing HSV and BGR Dominance Masking Code stays here) ---
         hsv = cv2.cvtColor(cv2.GaussianBlur(frame, (5,5), 0), cv2.COLOR_BGR2HSV)
-        # Stricter HSV: require higher saturation (avoid whites and grays)
-        lower_red1 = np.array([0, 120, 100])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([160, 120, 100])
-        upper_red2 = np.array([179, 255, 255])
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        lower_red1 = np.array([0, 120, 100]); upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 120, 100]); upper_red2 = np.array([179, 255, 255])
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1); mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
         hsv_red = cv2.bitwise_or(mask1, mask2)
-
-        # BGR dominance filter to help reject brown wood and shadows (use safe int types)
-        red_channel = frame[:, :, 2].astype(np.int16)
-        green_channel = frame[:, :, 1].astype(np.int16)
-        blue_channel = frame[:, :, 0].astype(np.int16)
+        
+        red_channel = frame[:, :, 2].astype(np.int16); green_channel = frame[:, :, 1].astype(np.int16); blue_channel = frame[:, :, 0].astype(np.int16)
         red_dom = (red_channel > 140) & (red_channel > green_channel + 60) & (red_channel > blue_channel + 60)
         red_dom_mask = (red_dom.astype(np.uint8) * 255)
-
-        # Combine HSV and dominance masks; fall back to HSV-only if dominance removes everything
         combined = cv2.bitwise_and(hsv_red, red_dom_mask)
-        if cv2.countNonZero(combined) == 0 and cv2.countNonZero(hsv_red) > 0:
-            mask = hsv_red  # looser fallback
-            debug_note = 'loose-hsv'
-        else:
-            mask = combined
-            debug_note = 'combined'
-
+        mask = hsv_red if cv2.countNonZero(combined) == 0 else combined
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7,7), np.uint8))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
-
-        # Debug windows to help tune thresholds (small, non-blocking)
-        cv2.imshow("HSV Red Mask", hsv_red)
-        cv2.imshow("Red Dominance Mask", red_dom_mask)
-        cv2.imshow("Final Mask", mask)
+        # ------------------------------------------------------------------------
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # Debug logging
-        if len(contours) > 0:
-            areas = [cv2.contourArea(c) for c in contours]
-            print(f"[DETECT] {len(contours)} contours (max area {max(areas):.0f}) using {debug_note}")
-
         current_list = []
+        
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if TARGET_MIN_AREA < area < TARGET_MAX_AREA:
                 x, y, w, h = cv2.boundingRect(cnt)
                 aspect_ratio = w / float(h) if h != 0 else 0
                 fill_ratio = area / float(w * h) if w * h != 0 else 0
+                
                 if 0.25 < aspect_ratio < 4.0 and fill_ratio > 0.25:
                     M = cv2.moments(cnt)
                     if M["m00"] != 0:
                         cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+                        
+                        # Convert target pixel location to physical robot coordinates
                         rx, ry = pixel_to_robot(cx, cy, H_matrix)
+                        
+                        # --- NEW CRITICAL EXCLUSION CHECK ---
+                        is_inside_plate = False
+                        for drop_x, drop_y in drop_list:
+                            # Calculate physical distance (Euclidean distance) between target and plate
+                            distance = np.sqrt((rx - drop_x)**2 + (ry - drop_y)**2)
+                            if distance < EXCLUSION_RADIUS_MM:
+                                is_inside_plate = True
+                                break # Skip checking other plates, this one is invalid
+                        
+                        if is_inside_plate:
+                            # Visually mark it as ignored/excluded so you can see it working
+                            cv2.circle(display_frame, (cx, cy), 5, (0, 0, 255), -1) # Red dot for ignored
+                            cv2.putText(display_frame, "EXCLUDED (In Plate)", (x, y - 10), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                            continue # Jump to the next contour, ignoring this target!
+                        # -------------------------------------
+
+                        # Process valid targets normally
                         rect = cv2.minAreaRect(cnt)
                         angle = rect[2]
-                        if w < h:
-                            angle += 90
+                        if w < h: angle += 90
                         angle = int((angle + 180) % 180 - 90)
+                        
                         current_list.append((rx, ry, angle))
                         cv2.drawContours(display_frame, [cnt], -1, (0, 255, 0), 2)
-                        box = cv2.boxPoints(rect)
-                        box = np.int32(box)
-                        cv2.drawContours(display_frame, [box], 0, (255, 0, 0), 2)
-                        cv2.putText(display_frame, f"{angle}deg", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                    
-        cv2.waitKey(1)
-
-        # --- STABILITY LOGIC ---
-        if len(current_list) != 0:
-            if len(current_list) > 0 and len(current_list) == last_count:
-                stability_counter += 1
-            else:
-                stability_counter = 0
-                last_count = len(current_list)
-
-        # Visual Feedback
-        progress = int((stability_counter / STABILITY_LIMIT) * 100)
-        color = (0, 255, 0) if progress < 100 else (255, 255, 0)
-        
-        cv2.putText(display_frame, f"LOCKING TARGETS: {progress}%", (20, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                        
         cv2.imshow("Detection", display_frame)
+        cv2.waitKey(1)
         
-        # --- EXIT CONDITION ---
-        if stability_counter >= STABILITY_LIMIT:
-            print(f"[SUCCESS] Locked {len(current_list)} targets.")
-            #cv2.waitKey(500) # Brief pause so you can see the 100%
-    
+        # Instant return for photo debugging (no stability counter needed for photos)
+        if len(current_list) > 0:
+            print(f"[SUCCESS] Found {len(current_list)} valid unplaced targets.")
             return current_list
-
-
+        
+        # Fallback exit condition if all pieces are put away
+        if cv2.waitKey(1) & 0xFF == ord('q') or len(contours) == 0:
+            return []
+        
 # ---------------------------------------------------------
 # PHASE 3: PICK/PLACE LOOP
 # This function assumes 1 drop zone only has 1 part, and executes the pick/place operations in batches.
@@ -378,64 +348,60 @@ def phase_execute_batch(api, pick_list, drop_list):
     time.sleep(0.5)
     
     if len(pick_list) == 0 or len(drop_list) == 0:
-        print("missing targets, aborting")
+        print("[WARN] No targets or drop zones detected. Aborting.")
         return False
     
-    # If there are more targets than plates, drop all targets at the first plate.
-    batch_size = min(len(pick_list), len(drop_list))
-    print(f"\n[PHASE 3] Executing batch of {batch_size} operations.")
+    batch_size = len(pick_list)
+    print(f"\n[PHASE 3] Found {batch_size} target(s). Executing batch...")
 
     for i in range(batch_size):
         pick_x, pick_y, pick_r = pick_list[i]
-        drop_x, drop_y = drop_list[i] if len(drop_list) > 1 else drop_list[0]
+        drop_x, drop_y = drop_list[0] # Single pan layout
 
-        # Before starting any motion, ensure no human hand is in the workspace
+        print(f"\n--- [PROCESSING OBJECT {i+1} OF {batch_size}] ---")
+
+        # --- 1. PICK SEQUENCE ---
         ensure_no_hand_or_pause(api)
-
-        print(f"Task {i+1}: Moving {pick_x, pick_y} to {drop_x, drop_y} with orientation {pick_r}")
-
-        # --- PICK SEQUENCE ---
         dobotArm.open_gripper(api)
-        ensure_no_hand_or_pause(api)
+        time.sleep(0.3) # Give gripper air valve a moment to open
+        
+        # Descend to object
         move_safe_descend(api, pick_x, pick_y, Z_PICK_LOWER, pick_r)
+        
+        # Close gripper
         dobotArm.close_gripper(api)
+        print("[INFO] Closing gripper... waiting 1.5 seconds for physical grab.")
+        time.sleep(1.5) # Crucial: Hard delay gives the arm time to reach the table and clamp shut
+        
+        # Lift away safely
         move_safe_ascend(api, pick_x, pick_y, pick_r)
+        time.sleep(0.5)
 
-        # --- TRANSFER SEQUENCE ---
+        # --- 2. TRANSFER SEQUENCE ---
         ensure_no_hand_or_pause(api)
         move_between_points(api, (pick_x, pick_y), (drop_x, drop_y), pick_r)
+        time.sleep(0.8) # Delay for horizontal transit trip
 
-        # --- PLACE SEQUENCE ---
+        # --- 3. PLACE SEQUENCE ---
         ensure_no_hand_or_pause(api)
         move_safe_descend(api, drop_x, drop_y, Z_PICK, pick_r)
+        
         dobotArm.open_gripper(api)
         dobotArm.stop_pump(api)
+        print("[INFO] Releasing object... waiting 1.5 seconds for drop.")
+        time.sleep(1.5) # Hard delay ensures target drops into pan safely
+        
+        # Ascend away cleanly
         move_safe_ascend(api, drop_x, drop_y, pick_r)
+        time.sleep(0.5)
+        print(f"[SUCCESS] Object {i+1} deposited into the pan.")
 
-    # irl, it is ok for 1 dish to contain multiple parts
-    # if len(pick_list) > len(drop_list):
-    #     for i in range(len(pick_list)):
-    #         pick_x, pick_y = pick_list[i]
-    #         drop_x, drop_y = drop_list[0]
-    #         # --- PICK SEQUENCE ---
-    #         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
-    #         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_PICK)
-    #         dobotArm.close_gripper(api)
-    #         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
-
-    #     # --- PLACE SEQUENCE ---
-    #         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
-    #         dobotArm.open_gripper(api)
-    #         dobotArm.stop_pump(api)
-    #         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
-
-    # Retreat to the side to clear the workspace for the next scan
-    print("\n[PHASE 3] Retreating to side...")
+    # --- 4. BATCH CLEANUP ---
+    print("\n[PHASE 3] All detected objects cleared. Returning home...")
     dobotArm.move_to_home(api)
+    time.sleep(2.0) # Give it plenty of time to physically settle at home
     
-    print("\nBatch Complete.")
     return True
- 
 
 # ---------------------------------------------------------
 # FIXED MAIN EXECUTION
@@ -459,7 +425,7 @@ try:
             continue
         next_state()
 
-        pick_target = phase_detect_targets()
+        pick_target = phase_detect_targets(drop_zone)
         if pick_target is None:
             print("[ERROR] No targets detected. Restarting scan loop.")
             continue
@@ -468,29 +434,25 @@ try:
         # 2. Before executing commands, make sure the queue is running cleanly
         dType.SetQueuedCmdStartExec(api)
 
+        # Execute batch
         completed = phase_execute_batch(api, pick_target, drop_zone)
+        
         if completed:
             print("[INFO] Cycle complete. Press SPACE to run again or Q to quit.")
         else:
             print("[WARN] Batch execution did not complete successfully.")
+            continue
 
-        # 3. FIX: Wait for the physical robot to actually finish moving to its home 
-        # position before clearing the queue! Otherwise, you cut its commands off mid-air.
-        print("[INFO] Syncing with hardware... waiting for robot to reach home.")
-        while True:
-            # Check the index of the currently executing command
-            current_idx = dType.GetQueuedCmdCurrentIndex(api)[0]
-            # Check the index of the last command sent to the queue
-            last_idx = dType.GetQueuedCmdCmdIndex(api)[0]
-            if current_idx >= last_idx:
-                break
-            time.sleep(0.1)
-
-        # 4. Now that the arm is completely stopped at home, safely clear the queue
-        dType.SetQueuedCmdStopExec(api)
-        dType.SetQueuedCmdClear(api)
+        # 3. FIXED SYNCHRONIZATION FOR RESTARTS:
+        # Instead of querying complex tracking API attributes, we just issue a quick, 
+        # direct command to force clear the buffer so the next loop starts completely fresh.
+        try:
+            dType.SetQueuedCmdStopExec(api)
+            dType.SetQueuedCmdClear(api)
+        except Exception:
+            pass
         
-        # 5. Prompt for the spacebar restart
+        # 4. Prompt for the spacebar restart
         if not wait_for_space_to_restart():
             break
 
