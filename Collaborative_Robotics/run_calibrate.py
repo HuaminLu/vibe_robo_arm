@@ -1,4 +1,4 @@
-from collab import run_script
+from Collaborative_Robotics.collab import run_script
 import sys
 
 if __name__ == "__main__":
