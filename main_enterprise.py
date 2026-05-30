@@ -10,7 +10,8 @@ import cv2
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QComboBox, QFrame, QScrollArea, QGridLayout
+    QPushButton, QLabel, QComboBox, QFrame, QScrollArea, QGridLayout,
+    QSizePolicy
 )
 from PyQt5.QtGui import QImage, QPixmap, QFont, QColor
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
@@ -208,21 +209,18 @@ class EnterpriseMainWindow(QMainWindow):
         
         main_layout = QHBoxLayout()
         
-        # Left section - Video feed + Andon board
+        # --- Left section - Video feed takes entire left side ---
         left_layout = QVBoxLayout()
         
-        # Andon Board at top
-        self.andon_board = AndonBoard()
-        left_layout.addWidget(self.andon_board)
-        
-        # Video feed
         self.video_label = QLabel()
         self.video_label.setMinimumSize(1000, 600)
+        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.video_label.setAlignment(Qt.AlignCenter) 
         self.video_label.setStyleSheet("background-color: #000000; border: 2px solid #444;")
         self.video_label.mousePressEvent = self.on_video_click
         left_layout.addWidget(self.video_label)
         
-        # Right section - Controls and Robot Status
+        # --- Right section - Controls, Robot Status, and Andon Board ---
         right_layout = QVBoxLayout()
         
         # Title
@@ -307,7 +305,11 @@ class EnterpriseMainWindow(QMainWindow):
         
         right_layout.addWidget(scroll)
         
-        right_layout.addStretch()
+        right_layout.addSpacing(20)
+
+        # Andon Board moved to the bottom of the right column
+        self.andon_board = AndonBoard()
+        right_layout.addWidget(self.andon_board)
         
         # Assemble layout
         main_layout.addLayout(left_layout, 3)
@@ -321,7 +323,8 @@ class EnterpriseMainWindow(QMainWindow):
         bytes_per_line = ch * w
         qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
-        scaled_pixmap = pixmap.scaledToWidth(self.video_label.width())
+        # Scaled to maintain aspect ratio and fit properly
+        scaled_pixmap = pixmap.scaled(self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.video_label.setPixmap(scaled_pixmap)
     
     def on_video_click(self, event):
