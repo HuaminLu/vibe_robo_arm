@@ -265,9 +265,6 @@ class FleetController:
         self.paused = False
         self.emergency_stop_flag = False
         
-        # Auto-discover and connect to available robots
-        self._discover_and_connect_robots()
-        
         print(f"[FLEET] Fleet initialized with {len(self.arms)} arms")
     
     def _discover_and_connect_robots(self):
@@ -302,6 +299,17 @@ class FleetController:
                     ports.append(f"COM{i}")
         
         return ports
+    
+    def add_arm(self, com_port):
+        """Add a single arm by COM port and attempt connection"""
+        arm_id = max(self.arms.keys(), default=0) + 1
+        arm = RobotArm(arm_id, com_port)
+        if arm.connect():
+            self.arms[arm_id] = arm
+            print(f"[FLEET] Added arm {arm_id} on {com_port}")
+            return True
+        arm.shutdown()
+        return False
     
     def get_closest_available_arm(self, target_location):
         """Find closest available arm to target"""

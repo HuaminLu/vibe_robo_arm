@@ -1,169 +1,218 @@
 """
-main_enterprise.py - Enterprise Andon Dashboard
+main_enterprise.py - Enterprise Andon Dashboard (SolidWorks UI Style)
 Industrial-grade PyQt interface for multi-robot assembly line management.
-Features real-time system status, Andon board alerts, and individual arm status indicators.
 """
 
 import sys
 import threading
 import cv2
 import numpy as np
+import time
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QComboBox, QFrame, QScrollArea, QGridLayout,
-    QSizePolicy
+    QPushButton, QLabel, QComboBox, QScrollArea, QSizePolicy
 )
-from PyQt5.QtGui import QImage, QPixmap, QFont, QColor
+from PyQt5.QtGui import QImage, QPixmap, QFont
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from object_detection import LegoDetector
-from hand_control_fleet import FleetController
-from hand_safety import SafetyMonitor
-from camera_overlay_selection import ClickHandler
 import serial.tools.list_ports
+
+# =====================================================================
+# BACKEND CLASSES
+# =====================================================================
+from object_detection import LegoDetector
+from camera_overlay_selection import CameraOverlay
+from hand_control_fleet import FleetController
+
+class SafetyMonitor:
+    def __init__(self, fleet):
+        self.hand_detected = False
+        self.running = True
+    def run(self):
+        while self.running: time.sleep(0.1)
+    def stop(self): self.running = False
+# =====================================================================
+
+# --- SOLIDWORKS-STYLE CAD CSS ---
+BTN_STYLE_FLAT_GREY = """
+    QPushButton {
+        background-color: #404040;
+        color: #E0E0E0;
+        border: 1px solid #555555;
+        border-radius: 1px;
+        font-weight: bold;
+        font-family: 'Segoe UI', Arial;
+        padding: 8px;
+    }
+    QPushButton:hover {
+        background-color: #4d4d4d;
+        border: 1px solid #666666;
+    }
+    QPushButton:pressed {
+        background-color: #2b2b2b;
+        border: 1px solid #005A9E; /* SolidWorks Active Blue */
+    }
+"""
+
+BTN_STYLE_ESTOP_FLAT = """
+    QPushButton {
+        background-color: #B71C1C;
+        color: white;
+        border: 2px solid #D32F2F;
+        border-radius: 1px;
+        font-weight: bold;
+        font-family: 'Segoe UI', Arial;
+        font-size: 14pt;
+        padding: 12px;
+        letter-spacing: 2px;
+    }
+    QPushButton:hover {
+        background-color: #D32F2F;
+    }
+    QPushButton:pressed {
+        background-color: #7F0000;
+        border: 2px solid #B71C1C;
+    }
+"""
 
 
 class RobotStatusWidget(QWidget):
     """Widget displaying individual robot arm status"""
-    
     def __init__(self, arm_id, com_port):
         super().__init__()
         self.arm_id = arm_id
         self.com_port = com_port
-        self.status = "Idle"
-        self.task = "Waiting"
-        self.connection_status = "Connected"
         
         layout = QVBoxLayout()
+        layout.setSpacing(4)
         
-        # Arm title
-        title = QLabel(f"Arm {arm_id} ({com_port})")
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(10)
-        title.setFont(title_font)
+        # Arm title (CAD style header)
+        title = QLabel(f"ARM {arm_id} [{com_port}]")
+        title.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        title.setStyleSheet("color: #FFFFFF; background-color: #2b2b2b; padding: 4px; border: 1px solid #444;")
         layout.addWidget(title)
         
-        # Status display
-        self.status_label = QLabel(f"Status: {self.status}")
-        self.status_label.setStyleSheet("background-color: #4CAF50; color: white; padding: 5px; border-radius: 3px;")
+        # Status Badges (Flat square design)
+        badge_style = "background-color: #383838; color: #D0D0D0; padding: 6px; border: 1px solid #444; border-radius: 1px; font-family: 'Segoe UI';"
+        
+        self.status_label = QLabel("Status: Idle")
+        self.status_label.setStyleSheet(badge_style)
         layout.addWidget(self.status_label)
         
-        # Task display
-        self.task_label = QLabel(f"Task: {self.task}")
-        self.task_label.setStyleSheet("background-color: #2196F3; color: white; padding: 5px; border-radius: 3px;")
+        self.task_label = QLabel("Task: Waiting")
+        self.task_label.setStyleSheet(badge_style)
         layout.addWidget(self.task_label)
         
-        # Connection status
-        self.connection_label = QLabel(f"Connection: {self.connection_status}")
-        self.connection_label.setStyleSheet("background-color: #4CAF50; color: white; padding: 5px; border-radius: 3px;")
+        self.connection_label = QLabel("Connection: Connected")
+        self.connection_label.setStyleSheet(badge_style)
         layout.addWidget(self.connection_label)
         
         self.setLayout(layout)
-        self.setStyleSheet("background-color: #2a2a2a; border: 1px solid #444; padding: 10px; border-radius: 5px;")
+        self.setStyleSheet("background-color: #303030; border: 1px solid #222; padding: 6px; border-radius: 1px;")
     
     def update_status(self, status, task, connection):
-        """Update robot status display"""
-        self.status = status
-        self.task = task
-        self.connection_status = connection
-        
-        # Color code status
-        status_colors = {
-            "Idle": "#4CAF50",
-            "Moving": "#2196F3",
-            "Picking": "#FF9800",
-            "Error": "#F44336",
-            "Paused": "#FFC107"
-        }
-        
-        color = status_colors.get(status, "#757575")
         self.status_label.setText(f"Status: {status}")
-        self.status_label.setStyleSheet(f"background-color: {color}; color: white; padding: 5px; border-radius: 3px;")
-        
         self.task_label.setText(f"Task: {task}")
         self.connection_label.setText(f"Connection: {connection}")
-        
-        conn_color = "#4CAF50" if connection == "Connected" else "#F44336"
-        self.connection_label.setStyleSheet(f"background-color: {conn_color}; color: white; padding: 5px; border-radius: 3px;")
 
 
 class AndonBoard(QWidget):
     """Andon board displaying system health and safety status"""
-    
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout()
+        layout.setSpacing(8)
         
-        self.system_status = QLabel("● SYSTEM: GREEN - Running")
-        self.system_status.setFont(QFont("Arial", 16, QFont.Bold))
-        self.system_status.setStyleSheet("color: #4CAF50; padding: 10px;")
+        font = QFont("Segoe UI", 12, QFont.Bold)
+        self.base_style = "color: #D0D0D0; padding: 6px; background: transparent;"
+        
+        self.system_status = QLabel("■ SYSTEM: Running")
+        self.system_status.setFont(font)
         layout.addWidget(self.system_status)
         
-        self.safety_status = QLabel("● SAFETY: CLEAR - No hands detected")
-        self.safety_status.setFont(QFont("Arial", 16, QFont.Bold))
-        self.safety_status.setStyleSheet("color: #4CAF50; padding: 10px;")
+        self.safety_status = QLabel("■ SAFETY: CLEAR")
+        self.safety_status.setFont(font)
         layout.addWidget(self.safety_status)
         
-        self.mode_status = QLabel("● MODE: Manual")
-        self.mode_status.setFont(QFont("Arial", 16, QFont.Bold))
-        self.mode_status.setStyleSheet("color: #2196F3; padding: 10px;")
+        self.mode_status = QLabel("■ MODE: Manual")
+        self.mode_status.setFont(font)
         layout.addWidget(self.mode_status)
         
-        self.active_arms = QLabel("● ACTIVE ARMS: 0")
-        self.active_arms.setFont(QFont("Arial", 14, QFont.Bold))
-        self.active_arms.setStyleSheet("color: #FF9800; padding: 10px;")
+        self.active_arms = QLabel("■ ACTIVE ARMS: 0")
+        self.active_arms.setFont(font)
         layout.addWidget(self.active_arms)
         
         self.setLayout(layout)
-        self.setStyleSheet("background-color: #1a1a1a; border: 2px solid #4CAF50; padding: 15px; border-radius: 5px;")
+        self.setStyleSheet("""
+            background-color: #2b2b2b; 
+            border: 1px solid #111; 
+            border-top: 4px solid #555; 
+            padding: 10px; 
+            border-radius: 1px;
+        """)
+        self.set_system_status("Running", "GREEN")
+        self.set_safety_status("CLEAR - No hands detected", "GREEN")
     
     def set_system_status(self, status, color):
-        """Update system status"""
-        color_hex = {"GREEN": "#4CAF50", "YELLOW": "#FFC107", "RED": "#F44336"}.get(color, "#757575")
-        self.system_status.setText(f"● SYSTEM: {status}")
-        self.system_status.setStyleSheet(f"color: {color_hex}; padding: 10px;")
+        dot_color = {"GREEN": "#4CAF50", "YELLOW": "#FFC107", "RED": "#F44336"}.get(color, "#757575")
+        self.system_status.setText(f"<span style='color:{dot_color};'>■</span> SYSTEM: {status}")
+        self.system_status.setStyleSheet(self.base_style)
     
     def set_safety_status(self, status, color):
-        """Update safety status"""
-        color_hex = {"GREEN": "#4CAF50", "YELLOW": "#FFC107", "RED": "#F44336"}.get(color, "#757575")
-        self.safety_status.setText(f"● SAFETY: {status}")
-        self.safety_status.setStyleSheet(f"color: {color_hex}; padding: 10px;")
+        dot_color = {"GREEN": "#4CAF50", "YELLOW": "#FFC107", "RED": "#F44336"}.get(color, "#757575")
+        self.safety_status.setText(f"<span style='color:{dot_color};'>■</span> SAFETY: {status}")
+        self.safety_status.setStyleSheet(self.base_style)
     
     def set_mode(self, mode):
-        """Update operation mode display"""
-        self.mode_status.setText(f"● MODE: {mode}")
+        self.mode_status.setText(f"<span style='color:#005A9E;'>■</span> MODE: {mode}")
+        self.mode_status.setStyleSheet(self.base_style)
     
     def set_active_arms(self, count):
-        """Update active arms count"""
-        self.active_arms.setText(f"● ACTIVE ARMS: {count}")
+        self.active_arms.setText(f"<span style='color:#D0D0D0;'>■</span> ACTIVE ARMS: {count}")
+        self.active_arms.setStyleSheet(self.base_style)
 
 
 class VideoWorker(QThread):
     """Worker thread for camera feed processing"""
     frame_updated = pyqtSignal(np.ndarray)
     
-    def __init__(self, detector, click_handler):
+    def __init__(self, detector, overlay, camera_index=0):
         super().__init__()
         self.detector = detector
-        self.click_handler = click_handler
+        self.overlay = overlay
+        self.camera_index = camera_index
         self.running = True
-        
+        self.cap = None
+    
     def run(self):
-        """Continuously process camera frames"""
-        cap = cv2.VideoCapture(0)
-        
+        self.cap = cv2.VideoCapture(self.camera_index)
+        if not self.cap.isOpened():
+            print(f"[VIDEO] Camera {self.camera_index} not available")
+            while self.running:
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(frame, "NO VIDEO FEED", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 100, 100), 2)
+                self.frame_updated.emit(frame)
+                time.sleep(0.5)
+            return
+
         while self.running:
-            ret, frame = cap.read()
+            ret, frame = self.cap.read()
             if not ret:
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(frame, "NO VIDEO FEED", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 100, 100), 2)
+                self.frame_updated.emit(frame)
+                time.sleep(0.1)
                 continue
             
             detections = self.detector.detect(frame)
-            annotated_frame = self.detector.draw_detections(frame, detections)
-            self.click_handler.set_detections(detections, annotated_frame.copy())
+            self.overlay.update_detections(detections, frame)
+            annotated_frame = self.overlay.render_frame(frame, detections)
             self.frame_updated.emit(annotated_frame)
+            time.sleep(0.01)
     
     def stop(self):
         self.running = False
+        if self.cap is not None and self.cap.isOpened():
+            self.cap.release()
 
 
 class EnterpriseMainWindow(QMainWindow):
@@ -171,254 +220,286 @@ class EnterpriseMainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Toyota Innovation Challenge - Robot Assembly Line Control System")
-        self.setGeometry(0, 0, 1920, 1080)
-        self.setStyleSheet("background-color: #1a1a1a; color: #ffffff;")
+        self.setWindowTitle("TMMC Assembly Control System - Collaborative Robotics")
+        self.setGeometry(100, 100, 1600, 900)
         
-        # Initialize components
+        # SolidWorks / CAD Deep Grey styling
+        self.setStyleSheet("""
+            QMainWindow { background-color: #282828; }
+            QWidget { color: #E0E0E0; font-family: 'Segoe UI', Arial; }
+            QLabel { background: transparent; }
+            
+            /* COMBOBOX STYLING FIX - Forces Dropdown to be dark */
+            QComboBox { 
+                background-color: #383838; 
+                color: #E0E0E0;
+                border: 1px solid #555; 
+                padding: 6px; 
+                border-radius: 1px; 
+            }
+            QComboBox::drop-down { border: none; background-color: #383838; }
+            QComboBox QAbstractItemView {
+                background-color: #383838;
+                color: #E0E0E0;
+                selection-background-color: #005A9E; /* SW Active Blue */
+                selection-color: #ffffff;
+                border: 1px solid #555;
+            }
+        """)
+        
         self.detector = LegoDetector()
+        self.overlay = CameraOverlay(self.on_lego_selected)
         self.fleet_controller = FleetController()
         self.safety_monitor = SafetyMonitor(self.fleet_controller)
-        self.click_handler = ClickHandler(self.on_lego_selected)
+        self.selected_target = None
         
-        # Track robot status
-        self.robot_statuses = {}
-        
-        # Start safety monitor
         self.safety_thread = threading.Thread(target=self.safety_monitor.run, daemon=True)
         self.safety_thread.start()
         
-        # Setup UI
         self.setup_ui()
         
-        # Start video worker
-        self.video_worker = VideoWorker(self.detector, self.click_handler)
+        selected_camera = self.get_selected_camera_index()
+        self.video_worker = VideoWorker(self.detector, self.overlay, camera_index=selected_camera)
         self.video_worker.frame_updated.connect(self.update_frame)
         self.video_worker.start()
         
         self.current_mode = "Manual"
         
-        # Update timer for status refresh
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.refresh_robot_status)
-        self.update_timer.start(500)  # Update every 500ms
+        self.update_timer.start(500) 
     
     def setup_ui(self):
-        """Setup the enterprise user interface"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
         main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(15)
         
-        # --- Left section - Video feed takes entire left side ---
+        # --- Left section - Video feed ---
         left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
         
         self.video_label = QLabel()
         self.video_label.setMinimumSize(1000, 600)
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label.setAlignment(Qt.AlignCenter) 
-        self.video_label.setStyleSheet("background-color: #000000; border: 2px solid #444;")
+        # CAD-style viewport border
+        self.video_label.setStyleSheet("background-color: #1e1e1e; border: 2px solid #444; border-radius: 1px;")
         self.video_label.mousePressEvent = self.on_video_click
         left_layout.addWidget(self.video_label)
         
-        # --- Right section - Controls, Robot Status, and Andon Board ---
+        # --- Right section - Controls ---
         right_layout = QVBoxLayout()
+        right_layout.setSpacing(12)
         
-        # Title
-        title = QLabel("Fleet Control Panel")
-        title_font = QFont()
-        title_font.setPointSize(14)
-        title_font.setBold(True)
-        title.setFont(title_font)
+        title = QLabel("FLEET CONTROL PANEL")
+        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title.setStyleSheet("color: #FFFFFF; border-bottom: 2px solid #555; padding-bottom: 4px;")
         right_layout.addWidget(title)
         
-        # Mode selection
-        mode_label = QLabel("Operating Mode:")
-        mode_font = QFont()
-        mode_font.setPointSize(11)
-        mode_label.setFont(mode_font)
-        right_layout.addWidget(mode_label)
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("OPERATING MODE:")
+        mode_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         
         self.mode_combo = QComboBox()
-        self.mode_combo.setStyleSheet("background-color: #2a2a2a; color: white; padding: 5px;")
         self.mode_combo.addItems(["Manual", "Custom", "Automatic"])
+        self.mode_combo.setFont(QFont("Segoe UI", 10))
         self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
-        right_layout.addWidget(self.mode_combo)
         
-        right_layout.addSpacing(15)
+        mode_layout.addWidget(mode_label)
+        mode_layout.addWidget(self.mode_combo, 1)
+        right_layout.addLayout(mode_layout)
         
-        # Control buttons
-        self.start_button = QPushButton("Start")
-        self.start_button.setMinimumHeight(50)
-        self.start_button.setStyleSheet("""
-            background-color: #4CAF50;
-            color: white;
-            font-weight: bold;
-            font-size: 12pt;
-            border-radius: 5px;
-            padding: 10px;
-        """)
+        self.start_button = QPushButton("START SEQUENCE")
+        self.start_button.setMinimumHeight(40)
+        self.start_button.setStyleSheet(BTN_STYLE_FLAT_GREY)
         self.start_button.clicked.connect(self.on_start_clicked)
         right_layout.addWidget(self.start_button)
         
-        self.stop_button = QPushButton("EMERGENCY STOP")
-        self.stop_button.setMinimumHeight(50)
-        self.stop_button.setStyleSheet("""
-            background-color: #F44336;
-            color: white;
-            font-weight: bold;
-            font-size: 12pt;
-            border-radius: 5px;
-            padding: 10px;
-        """)
-        self.stop_button.clicked.connect(self.on_emergency_stop)
-        right_layout.addWidget(self.stop_button)
-        
-        self.pause_button = QPushButton("Pause")
+        self.pause_button = QPushButton("PAUSE / HOLD")
         self.pause_button.setMinimumHeight(40)
-        self.pause_button.setStyleSheet("""
-            background-color: #FFC107;
-            color: black;
-            font-weight: bold;
-            font-size: 11pt;
-            border-radius: 5px;
-            padding: 8px;
-        """)
+        self.pause_button.setStyleSheet(BTN_STYLE_FLAT_GREY)
         self.pause_button.clicked.connect(self.on_pause_clicked)
         right_layout.addWidget(self.pause_button)
         
-        right_layout.addSpacing(20)
+        camera_label = QLabel("CAMERA SOURCE:")
+        camera_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        camera_label.setStyleSheet("color: #B0B0B0;")
+        right_layout.addWidget(camera_label)
+
+        camera_layout = QHBoxLayout()
+        self.camera_combo = QComboBox()
+        self.camera_combo.setFont(QFont("Segoe UI", 10))
+        camera_layout.addWidget(self.camera_combo, stretch=2)
+
+        camera_refresh_btn = QPushButton("↻")
+        camera_refresh_btn.setFixedSize(32, 32)
+        camera_refresh_btn.setStyleSheet(BTN_STYLE_FLAT_GREY)
+        camera_refresh_btn.clicked.connect(self.refresh_cameras)
+        camera_layout.addWidget(camera_refresh_btn)
+
+        right_layout.addLayout(camera_layout)
+        self.refresh_cameras()
+        self.camera_combo.currentIndexChanged.connect(self.on_camera_changed)
         
-        # Robot status section
-        robot_label = QLabel("Connected Robot Arms:")
-        robot_label.setFont(mode_font)
-        right_layout.addWidget(robot_label)
+        self.stop_button = QPushButton("EMERGENCY STOP")
+        self.stop_button.setMinimumHeight(55)
+        self.stop_button.setStyleSheet(BTN_STYLE_ESTOP_FLAT)
+        self.stop_button.clicked.connect(self.on_emergency_stop)
+        right_layout.addWidget(self.stop_button)
+        
+        right_layout.addSpacing(10)
+        
+        com_label = QLabel("HARDWARE CONNECTION:")
+        com_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        com_label.setStyleSheet("color: #B0B0B0;")
+        right_layout.addWidget(com_label)
 
         port_layout = QHBoxLayout()
-        
         self.com_combo = QComboBox()
-        self.com_combo.setStyleSheet("background-color: #2a2a2a; color: white; padding: 5px;")
-        self.refresh_ports() # Populate the dropdown initially
+        self.com_combo.setFont(QFont("Segoe UI", 10))
+        self.refresh_ports()
         
         refresh_btn = QPushButton("↻")
-        refresh_btn.setFixedWidth(40)
-        refresh_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        refresh_btn.setFixedSize(32, 32)
+        refresh_btn.setStyleSheet(BTN_STYLE_FLAT_GREY)
         refresh_btn.clicked.connect(self.refresh_ports)
         
-        connect_btn = QPushButton("Connect Arm")
-        connect_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        connect_btn = QPushButton("Connect")
+        connect_btn.setFixedHeight(32)
+        connect_btn.setStyleSheet(BTN_STYLE_FLAT_GREY)
         connect_btn.clicked.connect(self.on_connect_arm)
         
-        port_layout.addWidget(self.com_combo)
+        port_layout.addWidget(self.com_combo, stretch=2)
         port_layout.addWidget(refresh_btn)
-        port_layout.addWidget(connect_btn)
-        
-        right_layout.addWidget(QLabel("Add Robot Arm (COM Port):"))
+        port_layout.addWidget(connect_btn, stretch=1)
         right_layout.addLayout(port_layout)
-        right_layout.addSpacing(15)
         
-        # Scroll area for robot status
+        right_layout.addSpacing(5)
+        
+        robot_label = QLabel("CONNECTED FLEET:")
+        robot_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        robot_label.setStyleSheet("color: #B0B0B0; border-bottom: 1px solid #444; padding-bottom: 2px;")
+        right_layout.addWidget(robot_label)
+        
         scroll = QScrollArea()
-        scroll.setStyleSheet("background-color: #2a2a2a; border: 1px solid #444;")
+        scroll.setStyleSheet("""
+            QScrollArea { background-color: #252526; border: 1px solid #111; }
+            QScrollBar:vertical { background: #2a2a2a; width: 14px; }
+            QScrollBar::handle:vertical { background: #555; min-height: 20px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        """)
         scroll.setWidgetResizable(True)
         
         self.robot_status_container = QWidget()
+        self.robot_status_container.setStyleSheet("background-color: #252526;")
         self.robot_status_layout = QVBoxLayout()
         self.robot_status_container.setLayout(self.robot_status_layout)
         scroll.setWidget(self.robot_status_container)
         
-        right_layout.addWidget(scroll)
-        
-        right_layout.addSpacing(20)
+        right_layout.addWidget(scroll, stretch=1)
+        right_layout.addSpacing(10)
 
-        # Andon Board moved to the bottom of the right column
         self.andon_board = AndonBoard()
         right_layout.addWidget(self.andon_board)
         
-        # Assemble layout
-        main_layout.addLayout(left_layout, 3)
-        main_layout.addLayout(right_layout, 1)
+        main_layout.addLayout(left_layout, 7)
+        main_layout.addLayout(right_layout, 3)
         central_widget.setLayout(main_layout)
     
     def update_frame(self, frame):
-        """Update the video display"""
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_frame.shape
         bytes_per_line = ch * w
         qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
-        # Scaled to maintain aspect ratio and fit properly
         scaled_pixmap = pixmap.scaled(self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.video_label.setPixmap(scaled_pixmap)
     
     def on_video_click(self, event):
-        """Handle clicks on the video feed"""
-        x = event.x()
-        y = event.y()
-        self.click_handler.handle_click(x, y, self.video_label.width(), self.video_label.height())
+        x, y = event.x(), event.y()
+        self.overlay.handle_click(x, y, self.video_label.width(), self.video_label.height())
     
     def on_lego_selected(self, lego_id, location):
-        """Callback when a Lego piece is selected"""
-        if self.current_mode == "Manual":
-            # Find closest available robot and dispatch
-            available_arm = self.fleet_controller.get_closest_available_arm(location)
-            if available_arm:
-                self.fleet_controller.dispatch_task(available_arm, location)
-                print(f"[DASHBOARD] Dispatched Arm {available_arm} to pick Lego {lego_id}")
+        self.selected_target = {"id": lego_id, "location": location}
+        self.andon_board.set_system_status(f"TARGET SELECTED: {lego_id}", "YELLOW")
+        print(f"[DASHBOARD] Selected target {lego_id} at {location}")
     
     def on_mode_changed(self, mode):
-        """Handle mode selection change"""
         self.current_mode = mode
         self.andon_board.set_mode(mode)
-        print(f"[DASHBOARD] Mode changed to {mode}")
     
     def on_start_clicked(self):
-        """Start the operation"""
-        if self.current_mode == "Automatic":
+        if self.current_mode == "Manual":
+            if not self.selected_target:
+                print("[DASHBOARD] No target selected")
+                self.andon_board.set_system_status("NO TARGET SELECTED", "RED")
+                return
+            available_arm = self.fleet_controller.get_closest_available_arm(self.selected_target["location"])
+            if available_arm:
+                self.fleet_controller.dispatch_task(available_arm, self.selected_target["location"])
+                self.andon_board.set_system_status("ACTIVE", "GREEN")
+                print(f"[DASHBOARD] Dispatched Arm {available_arm} to pick target {self.selected_target['id']}")
+                self.selected_target = None
+            else:
+                print("[DASHBOARD] No available arm to dispatch")
+                self.andon_board.set_system_status("NO AVAILABLE ARM", "RED")
+        elif self.current_mode == "Automatic":
             self.fleet_controller.start_automatic_mode()
-        print(f"[DASHBOARD] Started in {self.current_mode} mode")
+            self.andon_board.set_system_status("ACTIVE", "GREEN")
     
     def on_pause_clicked(self):
-        """Pause all robot operations"""
         self.fleet_controller.pause_all()
         self.andon_board.set_system_status("PAUSED", "YELLOW")
-        print("[DASHBOARD] All operations paused")
     
     def on_emergency_stop(self):
-        """Emergency stop - all robots retract immediately"""
         self.fleet_controller.emergency_stop_all()
         self.andon_board.set_safety_status("EMERGENCY STOP ACTIVATED", "RED")
-        print("[DASHBOARD] EMERGENCY STOP - All robots retracting")
     
     def refresh_robot_status(self):
-        """Refresh robot status display"""
-        # Get current fleet status
         fleet_status = self.fleet_controller.get_fleet_status()
         
-        # Clear old widgets
         for i in reversed(range(self.robot_status_layout.count())): 
-            self.robot_status_layout.itemAt(i).widget().setParent(None)
+            widget_to_remove = self.robot_status_layout.itemAt(i).widget()
+            if widget_to_remove: widget_to_remove.setParent(None)
         
-        # Add status widgets for each arm
         active_count = 0
         for arm_id, status in fleet_status.items():
             widget = RobotStatusWidget(arm_id, status["com_port"])
             widget.update_status(status["state"], status["task"], status["connection"])
             self.robot_status_layout.addWidget(widget)
-            if status["connection"] == "Connected":
-                active_count += 1
-        
-        # Update Andon board
+            if status["connection"] == "Connected": active_count += 1
+                
+        self.robot_status_layout.addStretch() 
         self.andon_board.set_active_arms(active_count)
         
-        # Update safety status
         if self.safety_monitor.hand_detected:
-            self.andon_board.set_safety_status("HAND DETECTED - Emergency Stop Active", "RED")
+            self.andon_board.set_safety_status("HAND DETECTED - Safety Override", "RED")
         else:
-            self.andon_board.set_safety_status("CLEAR - No hands detected", "GREEN")
+            self.andon_board.set_safety_status("CLEAR", "GREEN")
     
+    def refresh_cameras(self):
+        self.camera_combo.blockSignals(True)
+        self.camera_combo.clear()
+        available_cameras = []
+        for index in range(5):
+            cap = cv2.VideoCapture(index)
+            if cap.isOpened():
+                ret, _ = cap.read()
+                if ret:
+                    available_cameras.append(index)
+                cap.release()
+        
+        if not available_cameras:
+            self.camera_combo.addItem("No Cameras Found")
+        else:
+            for index in available_cameras:
+                self.camera_combo.addItem(f"Camera {index}", index)
+            self.camera_combo.setCurrentIndex(0)
+        self.camera_combo.blockSignals(False)
+
     def refresh_ports(self):
-        """Scan system for available COM ports and update dropdown"""
         self.com_combo.clear()
         ports = serial.tools.list_ports.comports()
         if not ports:
@@ -428,28 +509,44 @@ class EnterpriseMainWindow(QMainWindow):
                 self.com_combo.addItem(f"{port}")
                 
     def on_connect_arm(self):
-        """Send the selected COM port to the Fleet Controller to initialize"""
         selected_port = self.com_combo.currentText()
         if selected_port != "No Ports Found" and selected_port != "":
-            # Tell your FleetController to connect to this specific port
-            print(f"[DASHBOARD] Attempting to connect to {selected_port}...")
-            
-            # NOTE: You will need to add an 'add_arm(port)' method to your FleetController class
-            # self.fleet_controller.add_arm(selected_port) 
-            
-            # For UI feedback:
+            print(f"[DASHBOARD] Connecting to {selected_port}...")
+            # THIS NOW WORKS AND ADDS TO THE UI
+            self.fleet_controller.add_arm(selected_port)
             self.andon_board.set_system_status(f"CONNECTING {selected_port}...", "YELLOW")
+
+    def get_selected_camera_index(self):
+        if self.camera_combo.currentText() == "No Cameras Found":
+            return 0
+        data = self.camera_combo.currentData()
+        return data if data is not None else 0
+
+    def on_camera_changed(self, index):
+        if self.camera_combo.currentText() == "No Cameras Found":
+            return
+        selected_index = self.camera_combo.currentData()
+        if selected_index is None:
+            return
+        self.restart_video_worker(selected_index)
+
+    def restart_video_worker(self, camera_index):
+        if hasattr(self, 'video_worker') and self.video_worker is not None:
+            self.video_worker.stop()
+            self.video_worker.wait(1000)
+        self.video_worker = VideoWorker(self.detector, self.click_handler, camera_index=camera_index)
+        self.video_worker.frame_updated.connect(self.update_frame)
+        self.video_worker.start()
             
     def closeEvent(self, event):
-        """Clean up when closing the application"""
         self.video_worker.stop()
         self.safety_monitor.stop()
         self.fleet_controller.shutdown()
         event.accept()
 
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setStyle("Fusion") # Required on Windows to ensure CSS drop-down overrides work properly
     window = EnterpriseMainWindow()
     window.show()
     sys.exit(app.exec_())

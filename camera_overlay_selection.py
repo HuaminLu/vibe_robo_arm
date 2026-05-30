@@ -6,9 +6,9 @@ When clicking inside a detection box, grabs that Lego's location and sends to ro
 
 import cv2
 import numpy as np
+import time
 from PyQt5.QtCore import Qt
 
-7
 class ClickHandler:
     """Handles mouse click events on video feed for object selection"""
     
@@ -24,6 +24,7 @@ class ClickHandler:
         self.current_detections = []
         self.last_frame = None
         self.selected_history = []
+        self.click_markers = []
     
     def set_detections(self, detections, frame):
         """
@@ -45,7 +46,7 @@ class ClickHandler:
             display_width: Width of display widget
             display_height: Height of display widget
         """
-        if not self.last_frame is not None:
+        if self.last_frame is None:
             print("[CLICK] No frame available")
             return
         
@@ -62,8 +63,10 @@ class ClickHandler:
         
         if selected_detection:
             self._handle_selection(selected_detection)
+            self._add_click_marker((selected_detection["x"], selected_detection["y"]))
         else:
             print(f"[CLICK] No object at ({frame_x}, {frame_y})")
+            self._add_click_marker((frame_x, frame_y))
     
     def _find_clicked_detection(self, click_x, click_y):
         """
@@ -120,9 +123,24 @@ class ClickHandler:
         """Get history of selections"""
         return self.selected_history.copy()
     
+    def get_active_click_markers(self):
+        """Return active click markers and drop expired markers"""
+        now = time.time()
+        self.click_markers = [m for m in self.click_markers if now - m["created"] < m["duration"]]
+        return self.click_markers.copy()
+    
     def clear_history(self):
         """Clear selection history"""
         self.selected_history.clear()
+        self.click_markers.clear()
+    
+    def _add_click_marker(self, position, duration=5.0):
+        """Add a temporary click marker for feedback"""
+        self.click_markers.append({
+            "position": (int(position[0]), int(position[1])),
+            "created": time.time(),
+            "duration": duration
+        })
 
 
 class OverlayRenderer:
@@ -135,7 +153,7 @@ class OverlayRenderer:
         self.selected_color = (0, 0, 255)   # Red for selected
         self.line_thickness = 2
     
-    def draw_interactive_boxes(self, frame, detections, hover_detection=None, selected_detection=None):
+    def draw_interactive_boxes(self, frame, detections, hover_detection=None, selected_detection=None, click_markers=None):
         """
         Draw interactive bounding boxes on frame
         
@@ -144,6 +162,7 @@ class OverlayRenderer:
             detections: List of detections
             hover_detection: Detection under mouse hover
             selected_detection: Currently selected detection
+            click_markers: List of temporary click markers
             
         Returns:
             Annotated frame
@@ -174,7 +193,7 @@ class OverlayRenderer:
             cv2.circle(annotated, (x, y), 4, color, -1)
             
             # Draw label with clickable indicator
-            label = f"Lego {detection['id']} - Click to grab"
+            label = f"{detection.get('class', 'Object')} {detection['id']} - Click to grab"
             text_x = x - w
             text_y = y - h - 5
             
@@ -192,7 +211,13 @@ class OverlayRenderer:
             cv2.putText(annotated, label, (text_x, text_y),
                        font, font_scale, (0, 0, 0) if color == self.highlight_color else (0, 0, 0), 
                        font_thickness)
-        
+
+        if click_markers:
+            for marker in click_markers:
+                px, py = marker["position"]
+                cv2.circle(annotated, (px, py), 10, (255, 0, 0), -1)
+                cv2.circle(annotated, (px, py), 14, (255, 0, 0), 2)
+
         return annotated
     
     def draw_selection_feedback(self, frame, selected_detection):
@@ -269,8 +294,9 @@ class CameraOverlay:
         Returns:
             Annotated frame
         """
+        click_markers = self.click_handler.get_active_click_markers()
         return self.overlay_renderer.draw_interactive_boxes(
-            frame, detections, self.hover_detection, self.selected_detection
+            frame, detections, self.hover_detection, self.selected_detection, click_markers
         )
     
     def get_selected_object(self):

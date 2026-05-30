@@ -6,6 +6,7 @@ Identifies location and size of each detected piece on the table.
 
 import cv2
 import numpy as np
+import time
 from pathlib import Path
 
 
@@ -22,10 +23,13 @@ class LegoDetector:
         """
         self.confidence_threshold = confidence_threshold
         self.detections = []
+        self.last_detection_time = 0.0
+        self.detection_interval = 5.0
         
         try:
             from ultralytics import YOLO
             self.model = YOLO(model_path)
+            print(f"[DETECTOR] Loaded YOLO model: {model_path}")
         except ImportError:
             print("WARNING: ultralytics not installed. Install with: pip install ultralytics")
             print("Using mock detector for testing")
@@ -44,17 +48,29 @@ class LegoDetector:
               "confidence": float, "class": str}, ...]
         """
         if self.model is None:
-            return self._mock_detect(frame)
-        
-        # Run YOLO inference
+            detections = self._mock_detect(frame)
+            self.detections = detections
+            return detections
+
+        now = time.time()
+        if now - self.last_detection_time < self.detection_interval and self.detections:
+            return self.detections
+
+        # Run YOLO inference with default class labels
         results = self.model(frame, conf=self.confidence_threshold)
+        result = results[0]
         
         detections = []
-        for idx, result in enumerate(results[0].boxes):
-            box = result.xyxy[0].cpu().numpy()
-            conf = result.conf.cpu().numpy()[0]
+        for idx, box in enumerate(result.boxes):
+            xyxy = np.asarray(box.xyxy).flatten()
+            if xyxy.size != 4:
+                continue
+            x1, y1, x2, y2 = xyxy.tolist()
             
-            x1, y1, x2, y2 = box
+            conf = float(box.conf.cpu().numpy()) if hasattr(box, "conf") else float(box.conf)
+            cls_id = int(box.cls.cpu().numpy()) if hasattr(box, "cls") else int(box.cls)
+            class_name = self.model.names.get(cls_id, str(cls_id))
+            
             x = (x1 + x2) / 2
             y = (y1 + y2) / 2
             width = x2 - x1
@@ -67,10 +83,11 @@ class LegoDetector:
                 "width": float(width),
                 "height": float(height),
                 "confidence": float(conf),
-                "class": "Lego"
+                "class": class_name
             })
         
         self.detections = detections
+        self.last_detection_time = now
         return detections
     
     def _mock_detect(self, frame):
@@ -105,8 +122,8 @@ class LegoDetector:
             # Draw center point (red)
             cv2.circle(annotated, (x, y), 5, (0, 0, 255), -1)
             
-            # Draw label
-            label = f"Lego {detection['id']} ({detection['confidence']:.2f})"
+            # Draw label for detected object
+            label = f"{detection['class']} {detection['id']} ({detection['confidence']:.2f})"
             cv2.putText(annotated, label, (x - w, y - h - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
