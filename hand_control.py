@@ -1,6 +1,7 @@
 import time
 import cv2
 from cv import ObjectDetector
+from robot_interface import RobotInterface
 
 
 ROBOT_ACTIONS = {
@@ -17,9 +18,9 @@ ROBOT_ACTIONS = {
 }
 
 
-def control_robot_hand(action: str):
-    # Replace this with your actual robot hand interface.
-    print(f'Robot hand action: {action}')
+def control_robot_hand(robot: RobotInterface, action: str):
+    # Send action to the provided robot interface.
+    robot.send_action(action)
 
 
 def choose_action(detections):
@@ -38,6 +39,7 @@ def main():
         raise RuntimeError('Could not open webcam. Check your camera settings.')
 
     current_action = None
+    robot = RobotInterface()
 
     while True:
         ret, frame = cap.read()
@@ -51,7 +53,7 @@ def main():
             current_action = action
             if label:
                 print(f'Detected object: {label} -> action: {action}')
-            control_robot_hand(action)
+            control_robot_hand(robot, action)
 
         frame = detector.draw_boxes(frame, detections)
         cv2.putText(frame, f'Action: {action}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
