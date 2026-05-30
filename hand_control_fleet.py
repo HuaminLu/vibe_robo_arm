@@ -438,3 +438,21 @@ class TaskDispatcher:
         if strategy in ["closest", "idle_first", "load_balanced"]:
             self.assignment_strategy = strategy
             print(f"[DISPATCHER] Strategy changed to: {strategy}")
+
+    def add_arm(self, com_port):
+        """Initializes a new serial connection and adds the arm to the fleet"""
+        try:
+            # Example initialization (depends on your specific repo's syntax)
+            new_robot = RobotArm(port=com_port, baudrate=115200) 
+            arm_id = len(self.fleet) + 1
+            self.fleet[arm_id] = {
+                "robot": new_robot,
+                "com_port": com_port,
+                "state": "Idle",
+                "task": "Waiting",
+                "connection": "Connected"
+            }
+            return True
+        except Exception as e:
+            print(f"Failed to connect to {com_port}: {e}")
+            return False

@@ -19,6 +19,7 @@ from object_detection import LegoDetector
 from hand_control_fleet import FleetController
 from hand_safety import SafetyMonitor
 from camera_overlay_selection import ClickHandler
+import serial.tools.list_ports
 
 
 class RobotStatusWidget(QWidget):
@@ -292,6 +293,29 @@ class EnterpriseMainWindow(QMainWindow):
         robot_label = QLabel("Connected Robot Arms:")
         robot_label.setFont(mode_font)
         right_layout.addWidget(robot_label)
+
+        port_layout = QHBoxLayout()
+        
+        self.com_combo = QComboBox()
+        self.com_combo.setStyleSheet("background-color: #2a2a2a; color: white; padding: 5px;")
+        self.refresh_ports() # Populate the dropdown initially
+        
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setFixedWidth(40)
+        refresh_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        refresh_btn.clicked.connect(self.refresh_ports)
+        
+        connect_btn = QPushButton("Connect Arm")
+        connect_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        connect_btn.clicked.connect(self.on_connect_arm)
+        
+        port_layout.addWidget(self.com_combo)
+        port_layout.addWidget(refresh_btn)
+        port_layout.addWidget(connect_btn)
+        
+        right_layout.addWidget(QLabel("Add Robot Arm (COM Port):"))
+        right_layout.addLayout(port_layout)
+        right_layout.addSpacing(15)
         
         # Scroll area for robot status
         scroll = QScrollArea()
@@ -393,6 +417,29 @@ class EnterpriseMainWindow(QMainWindow):
         else:
             self.andon_board.set_safety_status("CLEAR - No hands detected", "GREEN")
     
+    def refresh_ports(self):
+        """Scan system for available COM ports and update dropdown"""
+        self.com_combo.clear()
+        ports = serial.tools.list_ports.comports()
+        if not ports:
+            self.com_combo.addItem("No Ports Found")
+        else:
+            for port, desc, hwid in sorted(ports):
+                self.com_combo.addItem(f"{port}")
+                
+    def on_connect_arm(self):
+        """Send the selected COM port to the Fleet Controller to initialize"""
+        selected_port = self.com_combo.currentText()
+        if selected_port != "No Ports Found" and selected_port != "":
+            # Tell your FleetController to connect to this specific port
+            print(f"[DASHBOARD] Attempting to connect to {selected_port}...")
+            
+            # NOTE: You will need to add an 'add_arm(port)' method to your FleetController class
+            # self.fleet_controller.add_arm(selected_port) 
+            
+            # For UI feedback:
+            self.andon_board.set_system_status(f"CONNECTING {selected_port}...", "YELLOW")
+            
     def closeEvent(self, event):
         """Clean up when closing the application"""
         self.video_worker.stop()
