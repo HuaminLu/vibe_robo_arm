@@ -1,0 +1,39 @@
+import cv2
+import mediapipe as mp
+
+# Initialize MediaPipe Hands modules
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+
+# Create the hand detector object
+# max_num_hands=1 limits tracking to one worker's hand to save processing power
+hands = mp_hands.Hands(
+    static_image_mode=False, 
+    max_num_hands=1, 
+    min_detection_confidence=0.5, 
+    min_tracking_confidence=0.5
+)
+
+def is_hand_in_frame(frame, display_frame):
+    """
+    Detects if a human hand is in the frame.
+    Draws hand landmarks on display_frame for visual feedback.
+    Returns: True if hand is detected, False otherwise.
+    """
+    # MediaPipe requires RGB images, but OpenCV captures in BGR
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Process the frame to find hands
+    results = hands.process(rgb_frame)
+    
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            # Draw the skeletal lines onto our display frame for the user to see
+            mp_drawing.draw_landmarks(
+                display_frame, 
+                hand_landmarks, 
+                mp_hands.HAND_CONNECTIONS
+            )
+        return True # Hand detected safely!
+        
+    return False # No hand detected

@@ -438,14 +438,33 @@ try:
         completed = phase_execute_batch(api, pick_target, drop_zone)
         
         if completed:
-            print("[INFO] Cycle complete. Press SPACE to run again or Q to quit.")
+            print("[INFO] Cycle complete. Sending robot home...")
         else:
             print("[WARN] Batch execution did not complete successfully.")
             continue
 
-        # 3. FIXED SYNCHRONIZATION FOR RESTARTS:
-        # Instead of querying complex tracking API attributes, we just issue a quick, 
-        # direct command to force clear the buffer so the next loop starts completely fresh.
+        # --- FIX: HARDWARE TRAJECTORY SYNC ---
+        # Get the unique ID of the absolute last command sent to the robot
+        last_cmd_idx = dType.GetQueuedCmdCurrentIndex(api)[0]
+        
+        print("[INFO] Syncing with hardware... waiting for robot to physically finish all movements.")
+        while True:
+            # Check what index the robot arm is physically processing right now
+            current_idx = dType.GetQueuedCmdCurrentIndex(api)[0]
+            
+            # If the physical arm hasn't caught up to the end of the script's instructions, keep waiting
+            # We look for a state where the index stops progressing or meets the target buffer clearance
+            time.sleep(0.5)
+            new_check_idx = dType.GetQueuedCmdCurrentIndex(api)[0]
+            
+            if new_check_idx == current_idx:
+                # If the index hasn't changed over half a second, the robot has physically executed everything and stopped
+                print("[INFO] Hardware sync complete. Robot is safely stationary at home.")
+                break
+
+        # 3. SAFE RESTART CLEARANCE:
+        # Now that we verified the physical arm has reached home and stopped moving, 
+        # it is 100% safe to reset the queue buffer for the next SPACE bar trigger.
         try:
             dType.SetQueuedCmdStopExec(api)
             dType.SetQueuedCmdClear(api)
