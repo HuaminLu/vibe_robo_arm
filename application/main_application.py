@@ -19,9 +19,9 @@ import serial.tools.list_ports
 # =====================================================================
 # BACKEND CLASSES
 # =====================================================================
-from object_detection import LegoDetector
-from camera_overlay_selection import CameraOverlay
-from hand_control_fleet import FleetController
+from application.object_detection import LegoDetector
+from application.camera_overlay_selection import CameraOverlay
+from application.hand_control_fleet import FleetController
 
 class SafetyMonitor:
     def __init__(self, fleet):
