@@ -6,8 +6,25 @@ When clicking inside a detection box, grabs that Lego's location and sends to ro
 
 import cv2
 import numpy as np
+import os
 import time
+import tempfile
+import urllib.request
 from PyQt5.QtCore import Qt
+
+try:
+    from mediapipe.tasks.python import vision
+    from mediapipe.tasks.python.core import base_options
+    from mediapipe.tasks.python.vision.core.image import Image
+    MP_HANDS_TASKS_AVAILABLE = True
+except Exception:
+    MP_HANDS_TASKS_AVAILABLE = False
+
+try:
+    import mediapipe as mp
+    MP_HANDS_SOLUTIONS_AVAILABLE = hasattr(mp, "solutions") and hasattr(mp.solutions, "hands")
+except ImportError:
+    MP_HANDS_SOLUTIONS_AVAILABLE = False
 
 class ClickHandler:
     """Handles mouse click events on video feed for object selection"""
@@ -175,6 +192,187 @@ class ClickHandler:
         self.click_markers.append(marker)
 
 
+class HandGestureDetector:
+    """Detects hand landmarks and gestures using MediaPipe"""
+
+    MODEL_FILE_NAME = "mediapipe_hand_landmarker.task"
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-assets/hand_landmarker.task"
+    CONNECTIONS = [
+        (0, 1), (1, 2), (2, 3), (3, 4),
+        (0, 5), (5, 6), (6, 7), (7, 8),
+        (5, 9), (9, 10), (10, 11), (11, 12),
+        (9, 13), (13, 14), (14, 15), (15, 16),
+        (13, 17), (17, 18), (18, 19), (19, 20),
+        (0, 17)
+    ]
+
+    def __init__(self, max_num_hands=2, min_detection_confidence=0.6, min_tracking_confidence=0.5):
+        self.enabled = False
+        self.latest_hands = []
+        self.mode = None
+        self.landmarker = None
+        self.hands = None
+
+        if MP_HANDS_TASKS_AVAILABLE:
+            self.mode = "tasks"
+            try:
+                self._init_tasks_detector(max_num_hands, min_detection_confidence, min_tracking_confidence)
+                self.enabled = True
+            except Exception as e:
+                print(f"[HAND] MediaPipe Tasks initialization failed: {e}")
+                self.enabled = False
+
+        elif MP_HANDS_SOLUTIONS_AVAILABLE:
+            self.mode = "solutions"
+            self._init_solutions_detector(max_num_hands, min_detection_confidence, min_tracking_confidence)
+            self.enabled = True
+
+    def _init_tasks_detector(self, max_num_hands, min_detection_confidence, min_tracking_confidence):
+        model_path = self._ensure_model_available()
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options.BaseOptions(model_asset_path=model_path),
+            num_hands=max_num_hands,
+            min_hand_detection_confidence=min_detection_confidence,
+            min_hand_presence_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+        )
+        self.landmarker = vision.HandLandmarker.create_from_options(options)
+
+    def _ensure_model_available(self):
+        model_path = os.path.join(tempfile.gettempdir(), self.MODEL_FILE_NAME)
+        if not os.path.exists(model_path):
+            print(f"[HAND] Downloading MediaPipe hand model to {model_path}")
+            urllib.request.urlretrieve(self.MODEL_URL, model_path)
+        return model_path
+
+    def _init_solutions_detector(self, max_num_hands, min_detection_confidence, min_tracking_confidence):
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=max_num_hands,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+        )
+
+    def process_frame(self, frame):
+        self.latest_hands = []
+        if not self.enabled:
+            return []
+
+        if self.mode == "tasks":
+            return self._process_tasks_frame(frame)
+
+        if self.mode == "solutions":
+            return self._process_solutions_frame(frame)
+
+        return []
+
+    def _process_tasks_frame(self, frame):
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        temp_file.close()
+        try:
+            cv2.imwrite(temp_file.name, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            image = Image.create_from_file(temp_file.name)
+            result = self.landmarker.detect(image)
+        except Exception as e:
+            print(f"[HAND] Detection failed: {e}")
+            return []
+        finally:
+            try:
+                os.remove(temp_file.name)
+            except OSError:
+                pass
+
+        return self._parse_task_result(result, frame)
+
+    def _parse_task_result(self, result, frame):
+        if not result or not result.hand_landmarks:
+            return []
+
+        height, width = frame.shape[:2]
+        hands = []
+        for landmarks, handedness_list in zip(result.hand_landmarks, result.handedness):
+            landmark_points = []
+            for idx, lm in enumerate(landmarks):
+                landmark_points.append({
+                    "id": idx,
+                    "x": int(lm.x * width),
+                    "y": int(lm.y * height),
+                    "z": lm.z,
+                })
+
+            label = "Hand"
+            if handedness_list:
+                category = handedness_list[0]
+                label = getattr(category, "category_name", None) or getattr(category, "label", None) or label
+
+            gesture = self._classify_gesture(landmark_points, label)
+            hands.append({
+                "landmarks": landmark_points,
+                "gesture": gesture,
+                "handedness": label,
+            })
+
+        return hands
+
+    def _process_solutions_frame(self, frame):
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(rgb)
+        if not results.multi_hand_landmarks:
+            return []
+
+        height, width = frame.shape[:2]
+        hands = []
+        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+            landmarks = []
+            for idx, lm in enumerate(hand_landmarks.landmark):
+                landmarks.append({
+                    "id": idx,
+                    "x": int(lm.x * width),
+                    "y": int(lm.y * height),
+                    "z": lm.z,
+                })
+
+            handedness_label = handedness.classification[0].label
+            gesture = self._classify_gesture(landmarks, handedness_label)
+            hands.append({
+                "landmarks": landmarks,
+                "gesture": gesture,
+                "handedness": handedness_label,
+            })
+
+        return hands
+
+    def _finger_is_extended(self, landmarks, tip_id, pip_id, handedness):
+        tip = landmarks[tip_id]
+        pip = landmarks[pip_id]
+        if tip_id == 4:
+            if handedness == "Right":
+                return tip["x"] > pip["x"]
+            return tip["x"] < pip["x"]
+        return tip["y"] < pip["y"]
+
+    def _classify_gesture(self, landmarks, handedness):
+        extended = [
+            self._finger_is_extended(landmarks, 4, 3, handedness),
+            self._finger_is_extended(landmarks, 8, 6, handedness),
+            self._finger_is_extended(landmarks, 12, 10, handedness),
+            self._finger_is_extended(landmarks, 16, 14, handedness),
+            self._finger_is_extended(landmarks, 20, 18, handedness),
+        ]
+        count = sum(extended)
+        if count == 0:
+            return "Fist"
+        if count == 5:
+            return "Open"
+        if count == 1 and extended[1]:
+            return "Point"
+        if count == 2 and extended[1] and extended[2]:
+            return "Peace"
+        return "Gesture"
+
+
 class OverlayRenderer:
     """Renders interactive overlay on camera feed"""
     
@@ -185,7 +383,7 @@ class OverlayRenderer:
         self.selected_color = (0, 0, 255)   # Red for selected
         self.line_thickness = 2
     
-    def draw_interactive_boxes(self, frame, detections, hover_detection=None, selected_detection=None, click_markers=None):
+    def draw_interactive_boxes(self, frame, detections, hover_detection=None, selected_detection=None, click_markers=None, mode=None):
         """
         Draw interactive bounding boxes on frame
         
@@ -195,6 +393,7 @@ class OverlayRenderer:
             hover_detection: Detection under mouse hover
             selected_detection: Currently selected detection
             click_markers: List of temporary click markers
+            mode: Current overlay mode
             
         Returns:
             Annotated frame
@@ -202,10 +401,53 @@ class OverlayRenderer:
         annotated = frame.copy()
 
         if click_markers:
-            for marker in click_markers:
+            if mode == "Custom" and len(click_markers) > 1:
+                for start, end in zip(click_markers, click_markers[1:]):
+                    start_pos = start["position"]
+                    end_pos = end["position"]
+                    cv2.line(annotated, start_pos, end_pos, (255, 0, 255), 2)
+
+            for idx, marker in enumerate(click_markers, start=1):
                 px, py = marker["position"]
                 cv2.circle(annotated, (px, py), 10, (255, 0, 0), -1)
                 cv2.circle(annotated, (px, py), 14, (255, 0, 0), 2)
+                if mode == "Custom":
+                    cv2.putText(
+                        annotated,
+                        str(idx),
+                        (px - 8, py + 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+        return annotated
+
+    def draw_hand_skeletons(self, frame, hand_data):
+        """Draw hand skeleton nodes and gesture labels"""
+        annotated = frame.copy()
+        if not hand_data:
+            return annotated
+
+        for hand in hand_data:
+            landmarks = hand.get("landmarks", [])
+            for start_idx, end_idx in HandGestureDetector.CONNECTIONS:
+                if start_idx >= len(landmarks) or end_idx >= len(landmarks):
+                    continue
+                start = landmarks[start_idx]
+                end = landmarks[end_idx]
+                cv2.line(annotated, (start["x"], start["y"]), (end["x"], end["y"]), (0, 255, 255), 2)
+
+            for lm in landmarks:
+                cv2.circle(annotated, (lm["x"], lm["y"]), 4, (0, 255, 255), -1)
+
+            if landmarks:
+                wrist = landmarks[0]
+                label = f"{hand.get('handedness', 'Hand')} {hand.get('gesture', '')}"
+                cv2.putText(annotated, label, (wrist["x"] + 5, wrist["y"] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
         return annotated
     
@@ -252,6 +494,8 @@ class CameraOverlay:
         """
         self.click_handler = ClickHandler(on_selection_callback)
         self.overlay_renderer = OverlayRenderer()
+        self.hand_detector = HandGestureDetector()
+        self.hand_data = []
         self.selected_detection = None
         self.hover_detection = None
         self.mode = "Manual"
@@ -259,6 +503,7 @@ class CameraOverlay:
     def update_detections(self, detections, frame):
         """Update current detections and frame"""
         self.click_handler.set_detections(detections, frame)
+        self.hand_data = self.hand_detector.process_frame(frame)
     
     def handle_click(self, click_x, click_y, display_width, display_height):
         """Handle mouse click"""
@@ -284,9 +529,10 @@ class CameraOverlay:
         Returns:
             Annotated frame
         """
+        hand_frame = self.overlay_renderer.draw_hand_skeletons(frame, self.hand_data)
         click_markers = self.click_handler.get_active_click_markers()
         return self.overlay_renderer.draw_interactive_boxes(
-            frame, detections, self.hover_detection, self.selected_detection, click_markers
+            hand_frame, detections, self.hover_detection, self.selected_detection, click_markers
         )
 
     def set_mode(self, mode):
@@ -301,49 +547,3 @@ class CameraOverlay:
     def clear_selection(self):
         """Clear current selection"""
         self.selected_detection = None
-
-
-class ClickableBox:
-    """Represents a clickable bounding box region"""
-    
-    def __init__(self, x, y, width, height, lego_id, callback=None):
-        """
-        Initialize clickable box
-        
-        Args:
-            x, y: Center coordinates
-            width, height: Dimensions
-            lego_id: ID of associated Lego
-            callback: Function to call on click
-        """
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-        self.lego_id = lego_id
-        self.callback = callback
-        self.is_hovered = False
-    
-    def contains_point(self, px, py):
-        """Check if point is within box"""
-        left = self.x - self.width / 2
-        right = self.x + self.width / 2
-        top = self.y - self.height / 2
-        bottom = self.y + self.height / 2
-        
-        return left <= px <= right and top <= py <= bottom
-    
-    def on_click(self):
-        """Handle click event"""
-        if self.callback:
-            self.callback(self.lego_id, (self.x, self.y))
-    
-    def draw(self, frame, color=(0, 255, 0), thickness=2):
-        """Draw box on frame"""
-        x = int(self.x)
-        y = int(self.y)
-        w = int(self.width / 2)
-        h = int(self.height / 2)
-        
-        cv2.rectangle(frame, (x - w, y - h), (x + w, y + h), color, thickness)
-        return frame
