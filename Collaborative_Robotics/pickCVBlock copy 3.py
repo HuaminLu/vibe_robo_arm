@@ -54,22 +54,19 @@ def pixel_to_robot(u, v, H):
 
 
 def move_safe_descend(api, x, y, z, rHead=0):
-    """Approach from above, then descend cleanly to the pick/place height."""
     dobotArm.move_to_xyz(api, x, y, Z_SAFE, rHead)
     dobotArm.move_to_xyz(api, x, y, z, rHead)
-
+    # CRITICAL: Force the queue processor to spin and execute these points!
+    dType.SetQueuedCmdStartExec(api)
 
 def move_safe_ascend(api, x, y, rHead=0):
-    """Return straight up to a safe clearance height after pick/place."""
     dobotArm.move_to_xyz(api, x, y, Z_SAFE, rHead)
-
+    dType.SetQueuedCmdStartExec(api)
 
 def move_between_points(api, start, end, rHead=0):
-    """Use a midway safe waypoint to smooth motion between two XY points."""
-    mid_x = (start[0] + end[0]) / 2.0
-    mid_y = (start[1] + end[1]) / 2.0
-    dobotArm.move_to_xyz(api, mid_x, mid_y, Z_SAFE, rHead)
+    dobotArm.move_to_xyz(api, start[0], start[1], Z_SAFE, rHead)
     dobotArm.move_to_xyz(api, end[0], end[1], Z_SAFE, rHead)
+    dType.SetQueuedCmdStartExec(api)
 
 
 def detect_hand(frame):
