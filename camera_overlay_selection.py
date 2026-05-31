@@ -25,6 +25,7 @@ class ClickHandler:
         self.last_frame = None
         self.selected_history = []
         self.click_markers = []
+        self.mode = "Manual"
     
     def set_detections(self, detections, frame):
         """
@@ -49,7 +50,11 @@ class ClickHandler:
         if self.last_frame is None:
             print("[CLICK] No frame available")
             return
-        
+
+        if self.mode == "Automatic":
+            print("[CLICK] Ignoring click in Automatic mode")
+            return
+
         # Convert display coordinates to frame coordinates
         frame_height, frame_width = self.last_frame.shape[:2]
         scale_x = frame_width / display_width
@@ -123,8 +128,21 @@ class ClickHandler:
         """Get history of selections"""
         return self.selected_history.copy()
     
+    def set_mode(self, mode):
+        """Set current click mode and adjust marker behaviour"""
+        self.mode = mode
+        if mode == "Automatic":
+            self.clear_click_markers()
+    
+    def clear_click_markers(self):
+        """Remove any active click markers"""
+        self.click_markers.clear()
+    
     def get_active_click_markers(self):
         """Return active click markers and drop expired markers"""
+        if self.mode == "Custom":
+            return self.click_markers.copy()
+
         now = time.time()
         self.click_markers = [m for m in self.click_markers if now - m["created"] < m["duration"]]
         return self.click_markers.copy()
@@ -134,13 +152,27 @@ class ClickHandler:
         self.selected_history.clear()
         self.click_markers.clear()
     
-    def _add_click_marker(self, position, duration=5.0):
+    def _add_click_marker(self, position):
         """Add a temporary click marker for feedback"""
-        self.click_markers.append({
+        if self.mode == "Automatic":
+            return
+
+        if self.mode == "Manual":
+            self.click_markers.clear()
+            duration = 2.0
+        elif self.mode == "Custom":
+            if len(self.click_markers) >= 4:
+                self.click_markers.pop(0)
+            duration = None
+        else:
+            duration = 2.0
+
+        marker = {
             "position": (int(position[0]), int(position[1])),
             "created": time.time(),
             "duration": duration
-        })
+        }
+        self.click_markers.append(marker)
 
 
 class OverlayRenderer:
@@ -168,49 +200,6 @@ class OverlayRenderer:
             Annotated frame
         """
         annotated = frame.copy()
-        
-        for detection in detections:
-            x = int(detection["x"])
-            y = int(detection["y"])
-            w = int(detection["width"] / 2)
-            h = int(detection["height"] / 2)
-            
-            # Determine color based on state
-            if selected_detection and detection["id"] == selected_detection["id"]:
-                color = self.selected_color
-                thickness = self.line_thickness + 2
-            elif hover_detection and detection["id"] == hover_detection["id"]:
-                color = self.hover_color
-                thickness = self.line_thickness + 1
-            else:
-                color = self.highlight_color
-                thickness = self.line_thickness
-            
-            # Draw box
-            cv2.rectangle(annotated, (x - w, y - h), (x + w, y + h), color, thickness)
-            
-            # Draw center point
-            cv2.circle(annotated, (x, y), 4, color, -1)
-            
-            # Draw label with clickable indicator
-            label = f"{detection.get('class', 'Object')} {detection['id']} - Click to grab"
-            text_x = x - w
-            text_y = y - h - 5
-            
-            # Add background to text for readability
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.5
-            font_thickness = 1
-            
-            text_size = cv2.getTextSize(label, font, font_scale, font_thickness)[0]
-            cv2.rectangle(annotated, 
-                         (text_x - 2, text_y - text_size[1] - 2),
-                         (text_x + text_size[0] + 2, text_y + 2),
-                         color, -1)
-            
-            cv2.putText(annotated, label, (text_x, text_y),
-                       font, font_scale, (0, 0, 0) if color == self.highlight_color else (0, 0, 0), 
-                       font_thickness)
 
         if click_markers:
             for marker in click_markers:
@@ -265,6 +254,7 @@ class CameraOverlay:
         self.overlay_renderer = OverlayRenderer()
         self.selected_detection = None
         self.hover_detection = None
+        self.mode = "Manual"
     
     def update_detections(self, detections, frame):
         """Update current detections and frame"""
@@ -298,6 +288,11 @@ class CameraOverlay:
         return self.overlay_renderer.draw_interactive_boxes(
             frame, detections, self.hover_detection, self.selected_detection, click_markers
         )
+
+    def set_mode(self, mode):
+        """Set the interaction mode for overlay click handling"""
+        self.mode = mode
+        self.click_handler.set_mode(mode)
     
     def get_selected_object(self):
         """Get currently selected object"""

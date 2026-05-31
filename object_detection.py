@@ -25,6 +25,7 @@ class LegoDetector:
         self.detections = []
         self.last_detection_time = 0.0
         self.detection_interval = 5.0
+        self.last_annotated = None
         
         try:
             from ultralytics import YOLO
@@ -59,6 +60,10 @@ class LegoDetector:
         # Run YOLO inference with default class labels
         results = self.model(frame, conf=self.confidence_threshold)
         result = results[0]
+        try:
+            self.last_annotated = result.plot()
+        except Exception:
+            self.last_annotated = frame.copy()
         
         detections = []
         for idx, box in enumerate(result.boxes):
@@ -89,7 +94,15 @@ class LegoDetector:
         self.detections = detections
         self.last_detection_time = now
         return detections
-    
+
+    def get_annotated_frame(self, frame):
+        """Return the raw YOLO annotated frame, updated every detection interval."""
+        if self.model is None:
+            return frame
+        if self.last_annotated is not None:
+            return self.last_annotated
+        return frame
+
     def _mock_detect(self, frame):
         """Mock detector for testing (returns dummy detections)"""
         return [

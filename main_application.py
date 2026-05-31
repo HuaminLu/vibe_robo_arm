@@ -184,6 +184,15 @@ class VideoWorker(QThread):
         self.cap = None
     
     def run(self):
+        if self.camera_index is None:
+            print("[VIDEO] No camera selected")
+            while self.running:
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(frame, "NO CAMERA SELECTED", (120, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 100, 100), 2)
+                self.frame_updated.emit(frame)
+                time.sleep(0.5)
+            return
+
         self.cap = cv2.VideoCapture(self.camera_index)
         if not self.cap.isOpened():
             print(f"[VIDEO] Camera {self.camera_index} not available")
@@ -204,9 +213,10 @@ class VideoWorker(QThread):
                 continue
             
             detections = self.detector.detect(frame)
-            self.overlay.update_detections(detections, frame)
-            annotated_frame = self.overlay.render_frame(frame, detections)
-            self.frame_updated.emit(annotated_frame)
+            annotated_frame = self.detector.get_annotated_frame(frame)
+            self.overlay.update_detections(detections, annotated_frame)
+            rendered_frame = self.overlay.render_frame(annotated_frame, detections)
+            self.frame_updated.emit(rendered_frame)
             time.sleep(0.01)
     
     def stop(self):
@@ -247,8 +257,10 @@ class EnterpriseMainWindow(QMainWindow):
             }
         """)
         
+        self.current_mode = "Manual"
         self.detector = LegoDetector()
         self.overlay = CameraOverlay(self.on_lego_selected)
+        self.overlay.set_mode(self.current_mode)
         self.fleet_controller = FleetController()
         self.safety_monitor = SafetyMonitor(self.fleet_controller)
         self.selected_target = None
@@ -262,8 +274,6 @@ class EnterpriseMainWindow(QMainWindow):
         self.video_worker = VideoWorker(self.detector, self.overlay, camera_index=selected_camera)
         self.video_worker.frame_updated.connect(self.update_frame)
         self.video_worker.start()
-        
-        self.current_mode = "Manual"
         
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.refresh_robot_status)
@@ -429,6 +439,7 @@ class EnterpriseMainWindow(QMainWindow):
     def on_mode_changed(self, mode):
         self.current_mode = mode
         self.andon_board.set_mode(mode)
+        self.overlay.set_mode(mode)
     
     def on_start_clicked(self):
         if self.current_mode == "Manual":
@@ -518,9 +529,9 @@ class EnterpriseMainWindow(QMainWindow):
 
     def get_selected_camera_index(self):
         if self.camera_combo.currentText() == "No Cameras Found":
-            return 0
+            return None
         data = self.camera_combo.currentData()
-        return data if data is not None else 0
+        return data if data is not None else None
 
     def on_camera_changed(self, index):
         if self.camera_combo.currentText() == "No Cameras Found":
@@ -534,7 +545,7 @@ class EnterpriseMainWindow(QMainWindow):
         if hasattr(self, 'video_worker') and self.video_worker is not None:
             self.video_worker.stop()
             self.video_worker.wait(1000)
-        self.video_worker = VideoWorker(self.detector, self.click_handler, camera_index=camera_index)
+        self.video_worker = VideoWorker(self.detector, self.overlay, camera_index=camera_index)
         self.video_worker.frame_updated.connect(self.update_frame)
         self.video_worker.start()
             
